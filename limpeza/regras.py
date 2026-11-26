@@ -3,7 +3,7 @@ from enum import StrEnum
 from datetime import date
 from decimal import Decimal
 
-from .leitura import LinhaCsv
+from .leitura import LinhaCsv, ObjetoJson
 from .normalizacao import (
     ErroNormalizacao,
     normalizar_cnj,
@@ -41,6 +41,13 @@ class LinhaPrecatorio:
     linha: int
     apresentado_em: date | None = None
     prazo_informado: date | None = None
+
+
+@dataclass
+class Apresentacao:
+    numero_processo: str
+    data: date  # data civil em Brasília
+    linha: int
 
 
 @dataclass
@@ -285,4 +292,96 @@ def ler_hub(
         normalizadas.append(p)
 
     return _indexar(normalizadas, arquivo, diario)
-    
+
+
+def ler_apresentacoes(
+    objetos: list[ObjetoJson], 
+    arquivo: str, 
+    diario: Diario
+) -> dict[str, Apresentacao]:
+    """Datas de apresentação por processo (apresentacoes.json, arquivo não documentado no leiaute)."""
+    indice: dict[str, Apresentacao] = {}
+
+    for o in objetos:
+        d = o.dados
+        if not isinstance(d, dict):
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="REGISTRO_INVALIDO", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro="?",
+                detalhe=f"esperava um objeto, veio {type(d).__name__}"
+            )
+            continue
+
+        try:
+            processo = normalizar_cnj(d.get("processo"))
+        except ErroNormalizacao as exc:
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="PROCESSO_INVALIDO", 
+                arquivo=arquivo, 
+                linha=o.linha,
+                registro=str(d.get("processo") or "(vazio)"), 
+                detalhe=str(exc)
+            )
+            continue
+
+        if processo.nota:
+            diario.registrar(
+                categoria=Categoria.CORRIGIDO, 
+                regra="PROCESSO_SEM_MASCARA", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=processo.valor,
+                detalhe=processo.nota
+            )
+        try:
+            data = normalizar_data_apresentacao(d.get("apresentado_em"))
+        except ErroNormalizacao as exc:
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="APRESENTACAO_INVALIDA", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=processo.valor, 
+                detalhe=str(exc)
+            )
+            continue
+
+        if data.nota:
+            diario.registrar(
+                categoria=Categoria.CORRIGIDO, 
+                regra="APRESENTACAO_COM_FUSO", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=processo.valor, 
+                detalhe=data.nota
+            )
+
+        anterior = indice.get(processo.valor)
+
+        if anterior is None:
+            indice[processo.valor] = Apresentacao(processo.valor, data.valor, o.linha)
+        elif anterior.data == data.valor:
+            diario.registrar(
+                categoria=Categoria.DESCARTADO, 
+                regra="APRESENTACAO_DUPLICADA", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=processo.valor,
+                detalhe=f"repete a linha {anterior.linha}"
+            )
+        else:
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="APRESENTACAO_DUPLICADA_DIVERGENTE", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=processo.valor,
+                detalhe=f"linha {anterior.linha} diz {anterior.data}, esta diz {data.valor}; "
+                f"mantida a linha {anterior.linha}"
+            )
+            
+    return indice
