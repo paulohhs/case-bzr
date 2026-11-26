@@ -1,6 +1,9 @@
+import json
+
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import StrEnum
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from .leitura import LinhaCsv, ObjetoJson
@@ -12,10 +15,14 @@ from .normalizacao import (
     chave_texto,
     calcular_prazo,
     dv_cnj_valido,
+    ler_data_hora,
+    data_local,
+    normalizar_data_pagamento,
 )
 
 
 ZERO = Decimal("0.00")
+TIPOS_VALIDOS = {"pagamento", "estorno"}
 
 
 class Categoria(StrEnum):
@@ -70,6 +77,45 @@ class Precatorio:
     @property
     def saldo(self) -> Decimal:
         return self.valor_face - self.total_pago
+
+
+@dataclass
+class Pagamento:
+    evento_id: str
+    numero_processo: str
+    tipo: str
+    valor: Decimal  # como veio (positivo)
+    data_pagamento: date
+    atualizado_em: datetime | None
+    linha: int
+
+    @property
+    def valor_assinado(self) -> Decimal:
+        return -self.valor if self.tipo == "estorno" else self.valor
+
+
+@dataclass
+class EventoEmDuvida:
+    linha: int
+    motivos: list[str]
+    original: object
+
+
+@dataclass
+class ResultadoPagamentos:
+    aceitos: list[Pagamento] = field(default_factory=list)
+    em_duvida: list[EventoEmDuvida] = field(default_factory=list)
+
+
+def _canonico(obj: object) -> str:
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+
+def _id_evento(obj: object) -> str | None:
+    if isinstance(obj, dict) and isinstance(obj.get("evento_id"), str) and obj["evento_id"].strip():
+        return obj["evento_id"].strip()
+    
+    return None
 
 
 @dataclass
@@ -557,4 +603,239 @@ def conciliar(
             pendencias=pendencias
         )
 
+    return resultado
+
+
+def processar_pagamentos(
+    objetos: list[ObjetoJson], 
+    processos_conhecidos: set[str],
+    arquivo: str, 
+    diario: Diario
+) -> ResultadoPagamentos:
+    resultado = ResultadoPagamentos()
+
+    def duvida(
+        o: ObjetoJson, 
+        regra: str, 
+        registro: str, 
+        motivos: list[str]
+    ) -> None:
+        diario.registrar(
+            categoria=Categoria.DUVIDA, 
+            regra=regra, 
+            arquivo=arquivo, 
+            linha=o.linha, 
+            registro=registro, 
+            detalhe="; ".join(motivos)
+        )
+        resultado.em_duvida.append(EventoEmDuvida(o.linha, motivos, o.dados))
+
+    # 1. Sem identificador não há como deduplicar nem versionar.
+    com_id: list[ObjetoJson] = []
+    for o in objetos:
+        if _id_evento(o.dados) is None:
+            duvida(
+                o=o, 
+                regra="EVENTO_SEM_ID", 
+                registro="?", 
+                motivos=["evento sem evento_id: não dá para saber se é repetido"]
+            )
+        else:
+            com_id.append(o)
+
+    # 2. Duplicata exata: o arquivo traz 7 dias e é reenviado todo dia, e a
+    #    reimportação depois de falha repete tudo. Fica só a primeira ocorrência.
+    vistos: dict[str, ObjetoJson] = {}
+    unicos: list[ObjetoJson] = []
+
+    for o in com_id:
+        chave = _canonico(o.dados)
+        if chave in vistos:
+            diario.registrar(
+                categoria=Categoria.DESCARTADO, 
+                regra="DUPLICATA_EXATA", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=_id_evento(o.dados),
+                detalhe=f"idêntico ao registro da linha {vistos[chave].linha}"
+            )
+        else:
+            vistos[chave] = o
+            unicos.append(o)
+
+    # 3. Mesmo evento_id com conteúdo diferente: é uma correção. Vale a versão com
+    #    atualizado_em mais recente, seja qual for a ordem no arquivo.
+    grupos: dict[str, list[ObjetoJson]] = defaultdict(list)
+    for o in unicos:
+        grupos[_id_evento(o.dados)].append(o)
+
+    vencedores: list[ObjetoJson] = []
+    for evento_id, versoes in grupos.items():
+        if len(versoes) == 1:
+            vencedores.append(versoes[0])
+            continue
+
+        try:
+            datadas = [(ler_data_hora(v.dados.get("atualizado_em")), v) for v in versoes]
+        except ErroNormalizacao as exc:
+            for v in versoes:
+                duvida(
+                    o=v, 
+                    regra="CONFLITO_DE_VERSAO", 
+                    registro=evento_id,
+                    motivos=[f"{len(versoes)} versões do evento e não dá para ordená-las ({exc})"]
+                )
+            continue
+
+        mais_recente = max(m for m, _ in datadas)
+        empatadas = [v for m, v in datadas if m == mais_recente]
+
+        if len(empatadas) > 1:
+            for v in versoes:
+                duvida(
+                    o=v, 
+                    regra="CONFLITO_DE_VERSAO", 
+                    registro=evento_id,
+                    motivos=[f"{len(empatadas)} versões diferentes com o mesmo atualizado_em {mais_recente.isoformat()}"]
+                )
+            continue
+        
+        vencedor = empatadas[0]
+        vencedores.append(vencedor)
+        for m, v in datadas:
+            if v is vencedor:
+                continue
+            diario.registrar(
+                categoria=Categoria.DESCARTADO, 
+                regra="VERSAO_SUBSTITUIDA", 
+                arquivo=arquivo, 
+                linha=v.linha, 
+                registro=evento_id,
+                detalhe=f"substituída pela versão da linha {vencedor.linha} "
+                         f"(atualizado_em {m.isoformat()} → {mais_recente.isoformat()}; "
+                         f"valor {v.dados.get('valor')!r} → {vencedor.dados.get('valor')!r})"
+            )
+
+    # 4. Validação campo a campo da versão que vale.
+    for o in sorted(vencedores, key=lambda x: x.indice):
+        d: dict = o.dados
+        evento_id = _id_evento(d)
+        motivos: list[str] = []
+        correcoes: list[tuple[str, str]] = []
+
+        processo = None
+        try:
+            n = normalizar_cnj(d.get("processo"))
+            processo = n.valor
+            if n.nota:
+                correcoes.append(("PROCESSO_SEM_MASCARA", n.nota))
+        except ErroNormalizacao as exc:
+            motivos.append(str(exc))
+
+        valor = None
+        try:
+            v = normalizar_valor(d.get("valor"))
+            valor = v.valor
+            if v.nota:
+                correcoes.append(("VALOR_FORMATO_BR", v.nota))
+        except ErroNormalizacao as exc:
+            motivos.append(str(exc))
+
+        tipo = str(d.get("tipo") or "").strip().casefold()
+        if tipo not in TIPOS_VALIDOS:
+            motivos.append(f"tipo desconhecido: {d.get('tipo')!r}")
+
+        atualizado = None
+        try:
+            atualizado = ler_data_hora(d.get("atualizado_em"))
+        except ErroNormalizacao as exc:
+            diario.registrar(
+                categoria=Categoria.AVISO, 
+                regra="ATUALIZADO_EM_INVALIDO", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=evento_id, 
+                detalhe=str(exc)
+            )
+
+        data_pgto = None
+        try:
+            dp = normalizar_data_pagamento(
+                bruto=d.get("data_pagamento"),
+                referencia=data_local(atualizado) if atualizado else None
+            )
+            data_pgto = dp.valor
+
+            if dp.nota:
+                correcoes.append(("DATA_FORMATO_BR", dp.nota))
+        except ErroNormalizacao as exc:
+            motivos.append(str(exc))
+
+        if valor is not None and tipo in TIPOS_VALIDOS:
+            if valor == ZERO:
+                motivos.append("valor zero")
+            elif valor < ZERO and tipo == "pagamento":
+                motivos.append(f"pagamento com valor negativo ({valor}): pode ser um estorno com o tipo errado")
+            elif valor < ZERO and tipo == "estorno":
+                motivos.append(f"estorno com valor negativo ({valor}): a convenção de sinal não está documentada")
+
+        if processo and processo not in processos_conhecidos:
+            motivos.append(f"processo {processo} não existe nem no tribunal nem no hub")
+
+        if motivos:
+            regra = "PROCESSO_AUSENTE" if not d.get("processo") else "EVENTO_INVALIDO"
+            duvida(o, regra, evento_id, motivos)
+            continue
+
+        for regra, nota in correcoes:
+            diario.registrar(
+                categoria=Categoria.CORRIGIDO, 
+                regra=regra, 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=evento_id, 
+                detalhe=nota
+            )
+
+        if tipo == "estorno":
+            diario.registrar(
+                categoria=Categoria.CORRIGIDO, 
+                regra="ESTORNO_SUBTRAIDO", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=evento_id, 
+                detalhe=f"tipo 'estorno' (não previsto no leiaute v2.1) subtrai {valor} do total pago"
+            )
+
+        if atualizado and data_pgto > data_local(atualizado):
+            diario.registrar(
+                categoria=Categoria.AVISO, 
+                regra="PAGAMENTO_APOS_ATUALIZACAO", 
+                arquivo=arquivo, 
+                linha=o.linha, 
+                registro=evento_id, 
+                detalhe=f"data de pagamento {data_pgto} posterior a atualizado_em {atualizado.isoformat()}"
+            )
+            
+        resultado.aceitos.append(Pagamento(evento_id, processo, tipo, valor, data_pgto, atualizado, o.linha))
+
+    # 5. Mesmo processo, tipo, valor e data com ids diferentes pode ser reenvio com id novo.
+    por_conteudo: dict[tuple, list[Pagamento]] = defaultdict(list)
+    for p in resultado.aceitos:
+        por_conteudo[(p.numero_processo, p.tipo, p.valor, p.data_pagamento)].append(p)
+
+    for grupo in por_conteudo.values():
+        if len(grupo) > 1:
+            ids = ", ".join(f"{p.evento_id} (linha {p.linha})" for p in grupo)
+
+            for p in grupo[1:]:
+                diario.registrar(
+                    categoria=Categoria.AVISO, 
+                    regra="POSSIVEL_DUPLICATA_COM_ID_NOVO", 
+                    arquivo=arquivo, 
+                    linha=p.linha, 
+                    registro=p.evento_id, 
+                    detalhe=f"mesmo processo, tipo, valor e data que {ids}; mantidos, confirmar com o tribunal"
+                )
+                
     return resultado
