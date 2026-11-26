@@ -1,3 +1,5 @@
+import io
+import csv
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +12,16 @@ class ArquivoLido:
     codificacao: str
     texto: str
     notas: list[str] = field(default_factory=list)
+
+
+class ErroArquivo(Exception):
+    """O arquivo inteiro está ilegível: nada dele deve ser importado."""
+
+
+@dataclass
+class LinhaCsv:
+    linha: int  # número da linha no arquivo, contando o cabeçalho como 1
+    campos: dict[str, str]
 
 
 def sha256(caminho: Path) -> str:
@@ -43,3 +55,34 @@ def ler_arquivo(caminho: Path, *, codificacao_documentada: str = "utf-8") -> Arq
         notas.append("quebras de linha CRLF (Windows)")
         
     return ArquivoLido(caminho.name, hashlib.sha256(dados).hexdigest(), codificacao, texto, notas)
+
+
+def ler_csv(arquivo: ArquivoLido, colunas: list[str], *, separador_documentado: str = ",") -> list[LinhaCsv]:
+    linhas_texto = arquivo.texto.splitlines()
+    if not linhas_texto:
+        raise ErroArquivo(f"{arquivo.nome}: arquivo vazio")
+    cabecalho = linhas_texto[0]
+    # O separador vem do cabeçalho, que não tem números: no corpo, a vírgula
+    # decimal do Excel confundiria um detector automático.
+    separador = ";" if cabecalho.count(";") > cabecalho.count(",") else ","
+    if separador != separador_documentado:
+        arquivo.notas.append(
+            f"separador {separador!r} em vez de {separador_documentado!r} como diz o leiaute"
+        )
+
+    leitor = csv.reader(io.StringIO(arquivo.texto), delimiter=separador)
+    nomes = [n.strip() for n in next(leitor)]
+    faltando = [c for c in colunas if c not in nomes]
+    if faltando:
+        raise ErroArquivo(f"{arquivo.nome}: colunas ausentes no cabeçalho: {faltando} (veio {nomes})")
+
+    resultado: list[LinhaCsv] = []
+    for numero, valores in enumerate(leitor, start=2):
+        if not any(v.strip() for v in valores):
+            continue  # linha em branco
+        if len(valores) != len(nomes):
+            # Devolve mesmo assim, com marcador, para virar dúvida e não sumir.
+            resultado.append(LinhaCsv(numero, {"__erro__": f"{len(valores)} campos, esperado {len(nomes)}"}))
+            continue
+        resultado.append(LinhaCsv(numero, dict(zip(nomes, (v.strip() for v in valores)))))
+    return resultado
