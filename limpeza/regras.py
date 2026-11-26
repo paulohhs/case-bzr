@@ -3,7 +3,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import StrEnum
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from .leitura import LinhaCsv, ObjetoJson
@@ -19,6 +19,15 @@ from .normalizacao import (
     data_local,
     normalizar_data_pagamento,
 )
+from .objetos_de_valor import (
+    Ocorrencia,
+    LinhaPrecatorio,
+    Apresentacao,
+    Precatorio,
+    Pagamento,
+    EventoEmDuvida,
+    ResultadoPagamentos,
+)
 
 
 ZERO = Decimal("0.00")
@@ -31,81 +40,6 @@ class Categoria(StrEnum):
     DESCARTADO = "descartado"
     DUVIDA = "duvida"
     AVISO = "aviso"
-
-
-@dataclass(frozen=True)
-class Ocorrencia:
-    categoria: Categoria
-    regra: str
-    arquivo: str
-    linha: int | None
-    registro: str
-    detalhe: str
-
-
-@dataclass
-class LinhaPrecatorio:
-    """Uma linha de uma das fontes (tribunal ou hub), já normalizada."""
-    numero_processo: str
-    ente_devedor: str
-    valor_face: Decimal
-    linha: int
-    apresentado_em: date | None = None
-    prazo_informado: date | None = None
-
-
-@dataclass
-class Apresentacao:
-    numero_processo: str
-    data: date  # data civil em Brasília
-    linha: int
-
-
-@dataclass
-class Precatorio:
-    numero_processo: str
-    ente_devedor: str
-    valor_face: Decimal
-    apresentado_em: date | None
-    prazo_pagamento: date | None
-    situacao: str  # conciliado | divergente | somente_tribunal | somente_hub
-    dv_cnj_valido: bool
-    pendencias: list[str] = field(default_factory=list)
-    total_pago: Decimal = ZERO
-    situacao_prazo: str = "sem_prazo"  # vencido | a_vencer | em_dia | quitado | sem_prazo
-    dias_para_prazo: int | None = None  # negativo = dias em atraso
-
-    @property
-    def saldo(self) -> Decimal:
-        return self.valor_face - self.total_pago
-
-
-@dataclass
-class Pagamento:
-    evento_id: str
-    numero_processo: str
-    tipo: str
-    valor: Decimal  # como veio (positivo)
-    data_pagamento: date
-    atualizado_em: datetime | None
-    linha: int
-
-    @property
-    def valor_assinado(self) -> Decimal:
-        return -self.valor if self.tipo == "estorno" else self.valor
-
-
-@dataclass
-class EventoEmDuvida:
-    linha: int
-    motivos: list[str]
-    original: object
-
-
-@dataclass
-class ResultadoPagamentos:
-    aceitos: list[Pagamento] = field(default_factory=list)
-    em_duvida: list[EventoEmDuvida] = field(default_factory=list)
 
 
 def _canonico(obj: object) -> str:

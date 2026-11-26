@@ -1,18 +1,15 @@
 import csv
 import json
 
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from decimal import Decimal
 
-from .leitura import ArquivoLido, ler_arquivo, ler_csv, ler_json_lista, sha256
+from .leitura import ler_arquivo, ler_csv, ler_json_lista, sha256
 from .relatorio import gerar_markdown, gerar_json
 from .regras import (
     Categoria,
     Diario,
-    Precatorio,
-    ResultadoPagamentos,
     aplicar_totais,
     classificar_prazos,
     conciliar,
@@ -21,25 +18,13 @@ from .regras import (
     ler_tribunal,
     processar_pagamentos,
 )
+from .objetos_de_valor import Resultado
 
 
 ARQ_PAGAMENTOS = "pagamentos.json"
 ARQ_TRIBUNAL = "tribunal.csv"
 ARQ_HUB = "hub.csv"
 ARQ_APRESENTACOES = "apresentacoes.json"  # opcional
-
-
-@dataclass
-class Resultado:
-    arquivos: list[ArquivoLido]
-    precatorios: dict[str, Precatorio]
-    pagamentos: ResultadoPagamentos
-    diario: Diario
-    referencia: date
-
-    @property
-    def tem_duvidas(self) -> bool:
-        return bool(self.diario.da_categoria(Categoria.DUVIDA))
 
 
 def limpar(entrada: Path, referencia: date) -> Resultado:

@@ -2,34 +2,13 @@ import io
 import csv
 import hashlib
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
-
-
-@dataclass
-class ArquivoLido:
-    nome: str
-    sha256: str
-    codificacao: str
-    texto: str
-    notas: list[str] = field(default_factory=list)
-
-
-class ErroArquivo(Exception):
-    """O arquivo inteiro está ilegível: nada dele deve ser importado."""
-
-
-@dataclass
-class LinhaCsv:
-    linha: int  # número da linha no arquivo, contando o cabeçalho como 1
-    campos: dict[str, str]
-
-
-@dataclass
-class ObjetoJson:
-    indice: int  # posição na lista (0-based)
-    linha: int  # linha do arquivo onde o objeto começa
-    dados: object
+from .objetos_de_valor import (
+    ArquivoLido, 
+    LinhaCsv, 
+    ObjetoJson,
+)
+from .exceptions import ErroArquivo
 
 
 def sha256(caminho: Path) -> str:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from .exceptions import ErroNormalizacao
 
 
 """Regras de normalização de campos (processo CNJ, valores, datas, prazo, texto).
@@ -23,10 +24,6 @@ except ZoneInfoNotFoundError:  # sem base tz no sistema: Brasília está sem hor
 # Constituição, art. 100, § 5º (redação da EC 114/2021): apresentado até 2 de abril,
 # paga até 31/12 do ano seguinte; depois disso, até 31/12 do ano subsequente ao seguinte.
 DATA_CORTE_APRESENTACAO = (4, 2)  # (mês, dia), inclusive
-
-
-class ErroNormalizacao(ValueError):
-    """O valor não pode ser interpretado com segurança."""
 
 
 @dataclass(frozen=True)
