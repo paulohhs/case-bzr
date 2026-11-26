@@ -1,8 +1,13 @@
+import csv
+import json
+
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from decimal import Decimal
 
-from .leitura import ArquivoLido, ler_arquivo, ler_csv, ler_json_lista
+from .leitura import ArquivoLido, ler_arquivo, ler_csv, ler_json_lista, sha256
+from .relatorio import gerar_markdown, gerar_json
 from .regras import (
     Categoria,
     Diario,
@@ -141,3 +146,118 @@ def limpar(entrada: Path, referencia: date) -> Resultado:
     )
 
     return Resultado(arquivos, precatorios, pagamentos, diario, referencia)
+
+
+def _dinheiro(valor: Decimal) -> str:
+    return f"{valor:.2f}"
+
+
+def gravar(resultado: Resultado, saida: Path) -> list[Path]:
+    saida.mkdir(parents=True, exist_ok=True)
+    gerados: list[Path] = []
+
+    caminho = saida / "precatorios_limpos.csv"
+    with caminho.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(
+            [
+                "numero_processo", 
+                "ente_devedor", 
+                "valor_face", 
+                "apresentado_em", 
+                "prazo_pagamento",
+                "situacao_prazo", 
+                "dias_para_prazo", 
+                "total_pago", 
+                "saldo", 
+                "situacao", 
+                "dv_cnj_valido", 
+                "pendencias"
+            ]
+        )
+        for p in resultado.precatorios.values():
+            w.writerow(
+                [
+                    p.numero_processo, 
+                    p.ente_devedor, 
+                    _dinheiro(p.valor_face),
+                    p.apresentado_em.isoformat() if p.apresentado_em else "",
+                    p.prazo_pagamento.isoformat() if p.prazo_pagamento else "",
+                    p.situacao_prazo, 
+                    "" if p.dias_para_prazo is None else p.dias_para_prazo,
+                    _dinheiro(p.total_pago), 
+                    _dinheiro(p.saldo), 
+                    p.situacao,
+                    "sim" if p.dv_cnj_valido else "nao", 
+                    " | ".join(p.pendencias)
+                ]
+            )
+
+    gerados.append(caminho)
+
+    caminho = saida / "pagamentos_limpos.csv"
+    with caminho.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow([
+            "evento_id", 
+            "numero_processo", 
+            "tipo", 
+            "valor", 
+            "valor_com_sinal", 
+            "data_pagamento",
+            "atualizado_em", 
+            "linha_origem"
+        ])
+
+        for p in resultado.pagamentos.aceitos:
+            w.writerow([
+                p.evento_id, 
+                p.numero_processo, 
+                p.tipo, 
+                _dinheiro(p.valor), 
+                _dinheiro(p.valor_assinado),
+                p.data_pagamento.isoformat(), 
+                p.atualizado_em.isoformat() if p.atualizado_em else "",
+                p.linha
+            ])
+            
+    gerados.append(caminho)
+
+    caminho = saida / "pagamentos_em_duvida.json"
+    quarentena = [
+        {"linha_origem": e.linha, "motivos": e.motivos, "evento_original": e.original}
+        for e in resultado.pagamentos.em_duvida
+    ]
+
+    caminho.write_text(json.dumps(quarentena, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    gerados.append(caminho)
+
+    caminho = saida / "relatorio_limpeza.md"
+    caminho.write_text(gerar_markdown(resultado), encoding="utf-8")
+    gerados.append(caminho)
+
+    caminho = saida / "relatorio_limpeza.json"
+    caminho.write_text(gerar_json(resultado), encoding="utf-8")
+    gerados.append(caminho)
+    return gerados
+
+
+def executar(entrada: Path, saida: Path, referencia: date) -> Resultado:
+    entrada, saida = entrada.resolve(), saida.resolve()
+    if saida == entrada:
+        raise ValueError("a saída não pode ser a pasta dos arquivos originais")
+    
+    originais = {
+        n: sha256(entrada / n) 
+        for n in (ARQ_TRIBUNAL, ARQ_HUB, ARQ_PAGAMENTOS, ARQ_APRESENTACOES)
+        if (entrada / n).exists()
+    }
+
+    resultado = limpar(entrada, referencia)
+    gravar(resultado, saida)
+
+    # Garantia de que os originais não foram tocados.
+    for nome, hash_antes in originais.items():
+        if sha256(entrada / nome) != hash_antes:  # pragma: no cover - não deve acontecer
+            raise RuntimeError(f"{nome} mudou durante a execução")
+    return resultado
