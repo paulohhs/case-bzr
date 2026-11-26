@@ -839,3 +839,35 @@ def processar_pagamentos(
                 )
                 
     return resultado
+
+
+def aplicar_totais(
+    precatorios: dict[str, Precatorio], 
+    pagamentos: list[Pagamento],
+    arquivo: str, diario: Diario
+) -> None:
+    for p in pagamentos:
+        precatorios[p.numero_processo].total_pago += p.valor_assinado
+
+    for prec in precatorios.values():
+        if prec.total_pago < ZERO:
+            prec.pendencias.append(f"total pago negativo ({prec.total_pago}): estorno sem pagamento correspondente")
+            
+            diario.registrar(
+                categoria=Categoria.AVISO, 
+                regra="TOTAL_NEGATIVO", 
+                arquivo=arquivo, 
+                linha=None, 
+                registro=prec.numero_processo, 
+                detalhe=f"total pago {prec.total_pago}"
+            )
+        elif prec.total_pago > prec.valor_face:
+            diario.registrar(
+                categoria=Categoria.AVISO, 
+                regra="PAGO_ACIMA_DO_FACE", 
+                arquivo=arquivo, 
+                linha=None, 
+                registro=prec.numero_processo, 
+                detalhe=f"total pago {prec.total_pago} maior que o valor de face {prec.valor_face} "
+                         "(pode ser correção monetária, conferir)"
+            )
