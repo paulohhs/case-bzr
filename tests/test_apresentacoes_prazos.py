@@ -9,7 +9,14 @@ from limpeza.regras import (
     ler_apresentacoes,
     LinhaPrecatorio,
     conciliar,
+    Precatorio,
+    classificar_prazos,
 )
+
+"""Data de apresentação vinda de apresentacoes.json e classificação de prazo vencido.
+
+Erro aqui muda a prioridade da carteira: um precatório vencido pode parecer em dia.
+"""
 
 
 PROC = "0012345-10.2019.8.26.0053"
@@ -74,6 +81,43 @@ class TestFonteDaData(unittest.TestCase):
         p, d = juntar({PROC: linha()}, {PROC: linha(date(2025, 4, 3))}, None)
         self.assertEqual(p.apresentado_em, date(2025, 4, 3))
         self.assertEqual(d.da_categoria(Categoria.AVISO), [])
+
+
+class TestClassificacaoDePrazo(unittest.TestCase):
+    def classificar(self, prazo, referencia, pago="0"):
+        p = Precatorio(PROC, "Ente", Decimal("1000.00"), None, prazo, "conciliado", False,
+                       total_pago=Decimal(pago))
+        diario = Diario()
+        classificar_prazos({PROC: p}, referencia, diario)
+        return p, diario
+
+    def test_ultimo_dia_ainda_esta_no_prazo(self):
+        p, _ = self.classificar(date(2025, 12, 31), date(2025, 12, 31))
+        self.assertEqual((p.situacao_prazo, p.dias_para_prazo), ("a_vencer", 0))
+
+    def test_dia_seguinte_esta_vencido(self):
+        p, d = self.classificar(date(2025, 12, 31), date(2026, 1, 1))
+        self.assertEqual((p.situacao_prazo, p.dias_para_prazo), ("vencido", -1))
+        self.assertEqual(d.da_categoria(Categoria.AVISO)[0].regra, "PRAZO_VENCIDO")
+
+    def test_janela_de_sessenta_dias(self):
+        self.assertEqual(self.classificar(date(2026, 3, 1), date(2025, 12, 31))[0].situacao_prazo, "a_vencer")
+        self.assertEqual(self.classificar(date(2026, 3, 2), date(2025, 12, 31))[0].situacao_prazo, "em_dia")
+
+    def test_quitado_nao_aparece_como_vencido(self):
+        p, d = self.classificar(date(2025, 12, 31), date(2026, 11, 24), pago="1000.00")
+        self.assertEqual(p.situacao_prazo, "quitado")
+        self.assertEqual(d.da_categoria(Categoria.AVISO), [])
+
+    def test_estorno_que_zera_o_pago_mantem_vencido(self):
+        # Se o estorno fosse somado, o saldo cairia e o atraso seria subestimado (P3).
+        p, _ = self.classificar(date(2025, 12, 31), date(2026, 11, 24), pago="0")
+        self.assertEqual(p.situacao_prazo, "vencido")
+        self.assertEqual(p.saldo, Decimal("1000.00"))
+
+    def test_sem_data_de_apresentacao_fica_sem_prazo(self):
+        p, _ = self.classificar(None, date(2026, 11, 24))
+        self.assertEqual((p.situacao_prazo, p.dias_para_prazo), ("sem_prazo", None))
 
 
 if __name__ == "__main__":

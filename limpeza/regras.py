@@ -23,6 +23,7 @@ from .normalizacao import (
 
 ZERO = Decimal("0.00")
 TIPOS_VALIDOS = {"pagamento", "estorno"}
+JANELA_PRAZO_PROXIMO_DIAS = 60
 
 
 class Categoria(StrEnum):
@@ -871,3 +872,49 @@ def aplicar_totais(
                 detalhe=f"total pago {prec.total_pago} maior que o valor de face {prec.valor_face} "
                          "(pode ser correção monetária, conferir)"
             )
+
+
+def classificar_prazos(
+    precatorios: dict[str, Precatorio], 
+    referencia: date, 
+    diario: Diario
+) -> None:
+    """Marca cada precatório como vencido, a vencer (até 60 dias), em dia, quitado ou sem prazo.
+
+    Roda depois dos totais, porque só importa o prazo de quem ainda tem saldo. O
+    último dia conta como dentro do prazo: vencido é só quando a referência passou dele.
+    """
+    for p in precatorios.values():
+        if p.prazo_pagamento is None:
+            p.situacao_prazo = "sem_prazo"
+            continue
+        
+        p.dias_para_prazo = (p.prazo_pagamento - referencia).days
+        if p.saldo <= ZERO:
+            p.situacao_prazo = "quitado"
+        elif p.dias_para_prazo < 0:
+            p.situacao_prazo = "vencido"
+            atraso = -p.dias_para_prazo
+            p.pendencias.append(f"prazo vencido em {p.prazo_pagamento} ({atraso} dias), saldo {p.saldo:.2f}")
+            
+            diario.registrar(
+                categoria=Categoria.AVISO, 
+                regra="PRAZO_VENCIDO", 
+                arquivo="base limpa", 
+                linha=None, 
+                registro=p.numero_processo,
+                detalhe=f"prazo {p.prazo_pagamento} vencido há {atraso} dias em {referencia}; "
+                         f"saldo {p.saldo:.2f}"
+            )
+        elif p.dias_para_prazo <= JANELA_PRAZO_PROXIMO_DIAS:
+            p.situacao_prazo = "a_vencer"
+            diario.registrar(
+                categoria=Categoria.AVISO, 
+                regra="PRAZO_PROXIMO", 
+                arquivo="base limpa", 
+                linha=None, 
+                registro=p.numero_processo,
+                detalhe=f"prazo {p.prazo_pagamento} vence em {p.dias_para_prazo} dias; saldo {p.saldo:.2f}"
+            )
+        else:
+            p.situacao_prazo = "em_dia"
