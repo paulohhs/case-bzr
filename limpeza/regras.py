@@ -9,6 +9,9 @@ from .normalizacao import (
     normalizar_cnj,
     normalizar_data_apresentacao,
     normalizar_valor,
+    chave_texto,
+    calcular_prazo,
+    dv_cnj_valido,
 )
 
 
@@ -48,6 +51,25 @@ class Apresentacao:
     numero_processo: str
     data: date  # data civil em Brasília
     linha: int
+
+
+@dataclass
+class Precatorio:
+    numero_processo: str
+    ente_devedor: str
+    valor_face: Decimal
+    apresentado_em: date | None
+    prazo_pagamento: date | None
+    situacao: str  # conciliado | divergente | somente_tribunal | somente_hub
+    dv_cnj_valido: bool
+    pendencias: list[str] = field(default_factory=list)
+    total_pago: Decimal = ZERO
+    situacao_prazo: str = "sem_prazo"  # vencido | a_vencer | em_dia | quitado | sem_prazo
+    dias_para_prazo: int | None = None  # negativo = dias em atraso
+
+    @property
+    def saldo(self) -> Decimal:
+        return self.valor_face - self.total_pago
 
 
 @dataclass
@@ -385,3 +407,154 @@ def ler_apresentacoes(
             )
             
     return indice
+
+
+def conciliar(
+    tribunal: dict[str, LinhaPrecatorio], 
+    hub: dict[str, LinhaPrecatorio],
+    diario: Diario, *, 
+    arquivo_tribunal: str, 
+    arquivo_hub: str,
+    apresentacoes: dict[str, Apresentacao] | None = None,
+    arquivo_apresentacoes: str = "apresentacoes.json"
+) -> dict[str, Precatorio]:
+    """Junta as fontes pelo processo normalizado.
+
+    Decisões:
+    - ente e valor de face: o tribunal é a fonte oficial e prevalece; a divergência
+      vira dúvida e o precatório sai com situação "divergente";
+    - data de apresentação: vem de apresentacoes.json; o hub é usado só quando o
+      processo não está lá. Se as duas fontes discordarem, vale apresentacoes.json
+      e o caso vira dúvida;
+    - prazo: sempre recalculado a partir da data, nunca copiado do hub.
+    """
+    resultado: dict[str, Precatorio] = {}
+    for processo in sorted(tribunal.keys() | hub.keys()):
+        t, h = tribunal.get(processo), hub.get(processo)
+        pendencias: list[str] = []
+
+        a = apresentacoes.get(processo) if apresentacoes is not None else None
+        data_hub = h.apresentado_em if h else None
+        if a and data_hub and a.data != data_hub:
+            apresentado = a.data
+            pendencias.append(f"data de apresentação divergente: {arquivo_apresentacoes} {a.data}, hub {data_hub}")
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="APRESENTACAO_DIVERGENTE", 
+                arquivo=arquivo_apresentacoes, 
+                linha=a.linha, 
+                registro=processo,
+                detalhe=f"{arquivo_apresentacoes} diz {a.data}, hub (linha {h.linha}) diz {data_hub}; "
+                f"usada a de {arquivo_apresentacoes} até confirmação")
+        elif a:
+            apresentado = a.data
+        else:
+            apresentado = data_hub
+            if apresentacoes is not None and data_hub:
+                diario.registrar(
+                    categoria=Categoria.AVISO, 
+                    regra="APRESENTACAO_SO_NO_HUB", 
+                    arquivo=arquivo_hub, 
+                    linha=h.linha, 
+                    registro=processo,
+                    detalhe=f"processo ausente em {arquivo_apresentacoes}; usada a data do hub ({data_hub})"
+                )
+
+        if t and h:
+            situacao = "conciliado"
+            ente, valor = t.ente_devedor, t.valor_face
+            if chave_texto(t.ente_devedor) == chave_texto(h.ente_devedor):
+                if t.ente_devedor != h.ente_devedor:
+                    diario.registrar(
+                        categoria=Categoria.CORRIGIDO, 
+                        regra="ENTE_GRAFIA", 
+                        arquivo=arquivo_hub, 
+                        linha=h.linha, 
+                        registro=processo,
+                        detalhe=f"{h.ente_devedor!r} é o mesmo ente que {t.ente_devedor!r} no tribunal "
+                        "(só muda acento, caixa ou espaço); adotada a grafia do tribunal"
+                    )
+            else:
+                pendencias.append(f"ente divergente: tribunal {t.ente_devedor!r}, hub {h.ente_devedor!r}")
+                diario.registrar(
+                    categoria=Categoria.DUVIDA, 
+                    regra="ENTE_DIVERGENTE", 
+                    arquivo=arquivo_hub, 
+                    linha=h.linha, 
+                    registro=processo, 
+                    detalhe=f"tribunal (linha {t.linha}) diz {t.ente_devedor!r}, hub diz {h.ente_devedor!r}; "
+                    "mantido o do tribunal até confirmação"
+                )
+            if t.valor_face != h.valor_face:
+                pendencias.append(f"valor de face divergente: tribunal {t.valor_face}, hub {h.valor_face}")
+                diario.registrar(
+                    categoria=Categoria.DUVIDA, 
+                    regra="VALOR_FACE_DIVERGENTE", 
+                    arquivo=arquivo_hub, 
+                    linha=h.linha, 
+                    registro=processo,
+                    detalhe=f"tribunal (linha {t.linha}) {t.valor_face}, hub {h.valor_face}; "
+                    "mantido o do tribunal até confirmação"
+                )
+            if pendencias:
+                situacao = "divergente"
+        elif t:
+            situacao, ente, valor = "somente_tribunal", t.ente_devedor, t.valor_face
+            pendencias.append("ausente na exportação do hub" +
+                              ("" if apresentado else ": sem data de apresentação, prazo não calculado"))
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="AUSENTE_NO_HUB", 
+                arquivo=arquivo_tribunal, 
+                linha=t.linha, 
+                registro=processo,
+                detalhe="precatório do tribunal que não existe no hub; pagamentos dele são rejeitados pela FK do banco"
+            )
+        else:
+            assert h is not None
+            situacao, ente, valor = "somente_hub", h.ente_devedor, h.valor_face
+            pendencias.append("ausente na lista do tribunal")
+            diario.registrar(
+                categoria=Categoria.DUVIDA, 
+                regra="AUSENTE_NO_TRIBUNAL", 
+                arquivo=arquivo_hub, 
+                linha=h.linha, 
+                registro=processo,
+                detalhe="precatório do hub que não está na lista do tribunal"
+            )
+
+        prazo =calcular_prazo(apresentado) if apresentado else None
+        if h and prazo and h.prazo_informado != prazo:
+            informado = h.prazo_informado.isoformat() if h.prazo_informado else "vazio"
+            diario.registrar(
+                categoria=Categoria.CORRIGIDO, 
+                regra="PRAZO_RECALCULADO", 
+                arquivo=arquivo_hub, 
+                linha=h.linha, 
+                registro=processo,
+                detalhe=f"apresentado em {apresentado.isoformat()} (data de Brasília): prazo é "
+                f"{prazo.isoformat()}, o hub dizia {informado}"
+            )
+        elif not h and prazo:
+            diario.registrar(
+                categoria=Categoria.CORRIGIDO, 
+                regra="PRAZO_CALCULADO", 
+                arquivo=arquivo_apresentacoes, 
+                linha=a.linha, 
+                registro=processo,
+                detalhe=f"precatório fora do hub: apresentado em {apresentado.isoformat()}, "
+                f"prazo {prazo.isoformat()}"
+            )
+
+        resultado[processo] = Precatorio(
+            numero_processo=processo, 
+            ente_devedor=ente, 
+            valor_face=valor, 
+            apresentado_em=apresentado, 
+            prazo_pagamento=prazo, 
+            situacao=situacao,
+            dv_cnj_valido=dv_cnj_valido(processo), 
+            pendencias=pendencias
+        )
+
+    return resultado
