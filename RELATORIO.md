@@ -1,11 +1,11 @@
 # DIAGNÓSTICO
 
-Os números não batem devido os seguintes fatores:
+Os números não batem por três causas principais:
 - Pagamentos são somados mais de uma vez devido o arquivo diário repetir eventos, a reexecução (em caso de quebra) soma novamente e uma correção vira um novo pagamento;
-- Prazo de pagamento está errado em pelo menos dois precatórios, informando prazos de vencimento em 31/12/2027 quando vencem em 31/12/2026.
-- Estornos entram somando;
 - Eventos que o script não entendem somem sem aviso;
-- A comparação com o tribunal não funciona, pois ela é feita por texto exato sobre um arquivo alterado pelo Excel, gerando divergências falsas e escondendo as reais.
+- Estornos entram somando;
+
+Além disso, foi identificado que existe prazo de pagamento com cálculo errado em pelo menos dois precatórios, onde foi informado vencimento 31/12/2027 mas deveria ser 31/12/2026. A comparação com o tribunal também não funciona, pois ela é feita por texto exato sobre um arquivo alterado pelo Excel, gerando divergências falsas e escondendo as reais.
 
 ## EVIDÊNCIAS DE PROBLEMAS IDENTIFICADOS:
 
@@ -66,11 +66,10 @@ Tipo: causa
 
 #### Arquivos: DOCUMENTACAO_TRIBUNAL.MD | schema.sql
 - problema: a documentação (DOCUMENTACAO_TRIBUNAL.MD - linha 15) diz que o tipo é sempre "pagamento". O schema (schema.sql - linha 12) aceita "estorno", mas o fluxo é de soma;
-- DUVIDA: O CORRETO É A COLUNA "TIPO" DO SQL ACEITAR APENAS "PAGAMENTO"?
 
 #### Impacto
 No caso do processo 0034567 (pagamentos.json - linhas 51-59 - ev-006 e ev-007 respectivamente), um script que só soma registra R$ 10.000,00, mas o total pago correto é R$ 0,00 devido o suposto estorno. O saldo irá aparecer como R$ 2.500 quando o correto é R$ 12.500.
-Ainda pior, esse precatório está vencido desde 31/12/2025, então o erro de estorno acaba escondendo uma dívida em traso.
+Ainda pior, esse precatório está vencido desde 31/12/2025, então o erro de estorno acaba escondendo uma dívida em atraso.
 
 ### 4 - Eventos descartados sem aviso
 Nível: alto
@@ -97,36 +96,15 @@ Tipo: causa
 No processo 0067890 (linha 98), os R$ 4.000 pagos não aparecem em lugar nenhum, ou seja, pagamentos reais estão deixando de ser registrados e ninguém fica sabendo.
 
 
-### 5 - Comparação tribunal x hub quebrado por formato
+### Formato dos arquivos e divergências (tratado na limpeza)
 Nível: médio
 
-Tipo: causa
-#### Arquivo: tribunal.csv
-- Todas as linhas estão formatadas erradas, em Windows-1252, separado por ';' e com valores com ',' como separador decimal, diferente da documentação (DOCUMENTACAO_TRIBUNAL.MD - linhas 20 e 26) que promete UTF-8, separado por ',' e como separador decimal '.'.
+Tipo: contexto (consequência: divergências falsas e reais)
 
-#### Arquivo hub.csv
-- Linha 2:
-    - problema: a coluna ente contém valor com formatação diferente que a apresentada no arquivo tribunal.csv;
-    - valor no arquivo: MUNICIPIO DE SAO PAULO;
-    - valor em tribunal.csv: Município de São Paulo;
-- Linha: 3;
-    - problema: número de processo sem máscara (fora do formato CNJ), diferente do que é apresentado no arquivo tribunal.csv;
-    - valor no arquivo: 00234562120208260053;
-    - valor em tribunal.csv no padrão CNJ: 0023456-21.2020.8.26.0053;
-- O passo 3 do fluxo operacional apresentado procura pelo nome do ente e o número do processo exatamente como estão escritos, logo, os casos citados acima não serão considerados em uma busca;
+O `tribunal.csv` chega em Windows-1252, separado por `;` e com vírgula decimal, diferente da documentação (DOCUMENTACAO_TRIBUNAL.md - linhas 20 e 26), que promete UTF-8, `,` e ponto decimal. O hub ainda traz o ente com grafia diferente (linha 2: `MUNICIPIO DE SAO PAULO` vs `Município de São Paulo` no tribunal) e o número do processo sem máscara (linha 3: `00234562120208260053`). A limpeza corrige encoding, grafia e máscara a cada execução, então isto não é uma causa à parte — é a razão de a conferência manual do passo 3 (que procura o nome e o número exatamente como estão escritos) gerar **divergências falsas** por grafia e **esconder as reais**.
 
 #### Impacto
-Devido divergências de grafia a operação gasta tempo com falsos alarmes enquanto problemas reais se perdem no meio deles. Salvar no Excel também pode ser um problema, pois um número de processo sem máscara perde os zeros à esquerda e pode virar notação científica. Por exemplo:
-- Número do processo sem máscara: 00234562120208260053;
-- Número do processo no formato esperado: 0023456-21.2020.8.26.0053;
-- Como pode ficar al salvar no Excel: 2,34562E+16;
-
-### 6 - Divergências reais
-Nível: médio;
-
-Tipo: consequência (5)
-
-Divergências invisíveis
+A operação gasta tempo com falsos alarmes enquanto divergências reais se perdem. Salvar o `tribunal.csv` no Excel agrava: um número sem máscara perde os zeros à esquerda e pode virar notação científica (`00234562120208260053` → `2,34562E+16`). As divergências reais que sobram depois da limpeza:
 
 | Nº processo | tribunal.csv | hub.csv | impacto |
 | :--- | :---: | ---: | ---: |
@@ -135,18 +113,111 @@ Divergências invisíveis
 | 0056789-54.2017.4.03.6100 | não está na lista | linha 6 | precatório pode já estar pago ou cancelado |
 | 0067890-65.2016.8.26.0053 | linha 6 | não está no hub, e tem pagamento (ev-011) | está fora da carteira mesmo recebendo pagamento |
 
-### 7 - Documentação do tribunal desatualizada
+### 5 - Schema do banco incoerente com os dados
 Nível: médio;
 
-Tipo: causa (1, 3, e 4)
-- Linha 15: tipo é sempre "pagamento", mas o tipo "estorno" existe e não tem sua convenção de sinal definida;
-- Linha 11: evento_id como identificador único, mas o mesmo id vem com valores diferentes e, apesar de ser único, existe as "versões" ... TOoooooDOooooooooooooooo
-- Não define o fuso das datas e é importante para o cálculo correto dos prazos. Por exemplo, 2025-04-03T01:00:00Z é dia 3 em UTC, mas dia 2 em Brasília;
-- Não define o campo com data de apresentação para tribunal.csv nem precatorio.csv. Ela vem de um arquivo separado, `apresentacoes.json`, que não é mencionado no leiaute nem no fluxo e traz o registro do precatório `0056789` que não aparece na lista do tribunal;
-- O processo diz que recebe um arquivo com dados dos últimos 7 dias, mas em pagamentos.json foi identificado um intervalo de quase 6 meses, 20/02 - 10/08/2025 pra ser mais exato;
+Tipo: causa (1 e 4)
+- O schema não tem `apresentado_em` nem `prazo_pagamento`, mas o hub exporta os dois. Ou o `schema.sql` não é o de produção, ou esses dados vêm de outro lugar.
+- `CHAR(20)` não comporta o número mascarado (ver o bloco de formato acima), falta de `UNIQUE (evento_id)` e de `atualizado_em` (ver 1). O `CHECK (valor > 0)` combinado com "ignora e segue" faz o evento sumir em silêncio (ver 4).
 
-#### Impacto
-A documentação errada faz com que as pessoas trabalhem com falsas convicções e, ao aparecer um problema, ninguém sabe se o erro está no hub, script ou tribunal.
+# LIMPEZA
+O programa usa só a biblioteca padrão, sem dependências. Os originais são lidos em bytes e o SHA-256 de cada um vai para o relatório. O programa recusa gravar na pasta de entrada e confere, ao final, que os originais não mudaram. A mesma entrada gera exatamente a mesma saída (há um teste para isso).
 
+### O que o programa gera (em `saida/`)
+
+| Arquivo | Conteúdo |
+|---|---|
+| `precatorios_limpos.csv` | Precatórios conciliados, com prazo recalculado, total pago, saldo, situação e pendências |
+| `pagamentos_limpos.csv` | Eventos aceitos, um por `evento_id`, com o valor já com sinal |
+| `pagamentos_em_duvida.json` | Eventos em quarentena: o original exato e o motivo |
+| `relatorio_limpeza.md` / `.json` | Tudo o que foi corrigido, descartado, deixado em dúvida ou sinalizado, com arquivo, linha e motivo |
+
+### Regras e decisões
+
+| Regra | Decisão | Por quê |
+|---|---|---|
+| Duplicata exata | Fica a primeira ocorrência; as demais são **descartadas** | É reenvio da janela de 7 dias ou reimportação |
+| Mesmo `evento_id` com conteúdo diferente | Vale a versão com o `atualizado_em` mais recente, comparando instantes e não textos. Empate com conteúdo diferente vira **dúvida** | É uma correção do tribunal, não um novo pagamento |
+| Versão mais nova inválida | **Dúvida**, sem voltar para a versão antiga | A antiga foi corrigida; usá-la seria adivinhar |
+| Estorno | Subtrai do total | Senão o total fica inflado (3) |
+| Valor negativo, zero ou nulo; processo vazio ou inexistente; tipo desconhecido | **Dúvida** (quarentena), fora dos totais | Pode ser dinheiro real: não descartar nem adivinhar |
+| Valor `"2.500,50"` | Corrigido para 2500.50 | Formato brasileiro sem ambiguidade |
+| Valor `"1.500"` | **Dúvida** | Pode ser 1500 ou 1,5 |
+| Valor com 3 ou mais casas decimais | **Dúvida** | Não arredondar dinheiro em silêncio |
+| Data `"10/04/2025"` | Vale DD/MM ou MM/DD conforme a única leitura que não fica depois do `atualizado_em`. Se as duas forem possíveis, **dúvida** | 4 de outubro seria depois da última alteração do registro |
+| Processo sem máscara | Recebe a máscara CNJ | Mesmo processo, outro formato |
+| Processo com menos de 20 dígitos | **Dúvida**, sem completar zeros | Pode ser truncamento do Excel ou outro erro |
+| `tribunal.csv` em Windows-1252, com `;` e vírgula decimal | Lido e corrigido; os acentos são recuperados | São os bytes do Excel, não caracteres perdidos |
+| Ente com grafia diferente (acento, caixa, espaço) | Mesmo ente; vale a grafia do tribunal | formato |
+| Ente ou valor de face diferentes de verdade | Vale o do tribunal, a situação fica "divergente" e o caso vira **dúvida** | O tribunal é a fonte oficial, mas alguém precisa confirmar |
+| Precatório em só uma das fontes | Entra com situação `somente_tribunal` ou `somente_hub` e vira **dúvida** | Não some, e fica visível |
+| `apresentado_em` com hora | Vale a data civil em Brasília | 2 |
+| Prazo | Sempre recalculado; o do hub não é usado | 2 |
+| Dígito verificador CNJ inválido | Aviso, sem descartar | dúvida |
+
+### Resultado nos arquivos recebidos
+
+| Processo | Total pago limpo | Prazo limpo | Situação |
+|---|---:|---|---|
+| 0012345-10.2019.8.26.0053 | 18.000,50 | **2026-12-31** (o hub dizia 2027) | conciliado |
+| 0023456-21.2020.8.26.0053 | 9.200,00 | 2027-12-31 | divergente (valor de face) |
+| 0034567-32.2018.8.26.0405 | 0,00 | 2025-12-31 | conciliado |
+| 0045678-43.2021.5.02.0011 | 3.000,00 | 2026-12-31 | divergente (ente) |
+| 0056789-54.2017.4.03.6100 | 0,00 | **2026-12-31** (o hub dizia 2027) | somente_hub |
+| 0067890-65.2016.8.26.0053 | 4.000,00 | não calculado (sem data de apresentação) | somente_tribunal |
+
+Dos 13 eventos recebidos, 8 foram aceitos, 2 descartados (`ev-002` repetido e a versão antiga do `ev-001`) e 3 ficaram em dúvida (`ev-004`, `ev-009`, `ev-010`). Houve 15 correções e 7 dúvidas no total. O detalhe linha a linha está em `saida/relatorio_limpeza.md`.
+
+# PREVENÇÃO
+### Processo
+1. Garantir que os arquivos do tribunal no Excel não são abertos/salvos. O arquivo pode ser armazenado da mesma forma que chegou, numa pasta somente leitura. A conferência com o hub utiliza este programa, que irá comparar pelo número normalizado e mostrar apenas divergências reais. Quando necessário olhar no Excel, realizar uma cópia;
+3. Criação de alertas e revisão diária, com um responsável e prazo definido, garantindo que não ocorra erros sem ninguém saber;
+4. Garantir que a importação é idempotente, conseguindo realizar reprocessamento sem preocupações de duplicidades;
+5. Alinhar com o tribunal melhor definição de leiaute, levantando questões como estorno e convenção de sinal, controle de versão por atualizado_em, melhoria na definição das datas com fusos e data de apresentação no tribunal.csv (arquivo schema.sql) e a janela real dos dados do arquivo;
+
+Importante encontrar o problema no cálculo de prazo na importação dos pagamentos.
+
+### Script de importação
+1. Usar as regras deste pacote (limpeza/normalizacao.py e limpeza/regras.py) como biblioteca, em vez de reimplementá-las.
+2. Ler e validar o arquivo inteiro antes de gravar qualquer coisa. Um JSON truncado não importa nada.
+3. Uma transação por arquivo: valida o arquivo inteiro, insere os eventos aceitos (o UNIQUE de evento_id barra reenvio) e grava a quarentena. Ou tudo entra, ou nada.
+4. Nunca acumular "total pago". O total vem sempre da soma dos eventos.
+5. Todo evento tem destino e a conta fecha (aceitos + descartados + em dúvida = lidos).
+6. Enviar alerta quando houver dúvidas (--estrito).
+
+### Banco (sql/prevencao.sql, testado no PostgreSQL 16)
+
+O `prevencao.sql` descreve o schema como deveria ser (desenho-alvo), não a migração; o teste está em sql/teste_prevencao.sql. Cada peça previne um problema:
+
+| Peça do schema |	Problema |
+| :--- | :---: |
+| Tabela pagamento com evento_id UNIQUE e atualizado_em NOT NULL | 1 |
+| evento_quarentena com o evento original (jsonb) e os motivos | 4 |
+| View precatorio_saldo: total pago com estorno negativo, sem contador | 1, 3 |
+| prazo_pagamento como coluna gerada a partir de apresentado_em DATE (data de Brasília) | 2 |
+| numero_processo VARCHAR(25) com CHECK do formato CNJ | formato |
+| situacao_conciliacao para deixar a divergência visível | divergências |
+
+Versão e deduplicação são resolvidas na limpeza antes da carga (o pagamentos_limpos.csv já traz uma linha por evento_id); o UNIQUE é a trava no banco.
+
+Migrar uma base já existente é um passo à parte: a tabela de pagamentos atual tem duplicatas e não guarda a versão dos eventos, então não dá para limpá-la em SQL — renomeia-se para pagamento_legado e carrega-se a tabela nova a partir de saida/pagamentos_limpos.csv, reprocessando também os arquivos históricos recebidos.
+
+# Dúvidas antes de pôr em produção
+### Para o tribunal
+A `DOCUMENTACAO_TRIBUNAL.md` parece desatualizada e é a raiz de boa parte das perguntas abaixo: não define o fuso das datas, a convenção de sinal do estorno, a data de apresentação (vem do `apresentacoes.json`, fora do leiaute) nem a janela real dos arquivos (diz 7 dias, mas `pagamentos.json` cobre ~6 meses).
+
+1. Estorno é um tipo oficial? O valor vem sempre positivo? Como saber qual pagamento está sendo estornado?
+2. Versões: o `evento_id` se mantém quando o evento é corrigido? É o `atualizado_em` que decide qual versão vale? Um mesmo pagamento pode voltar com outro id?
+3. O arquivo `pagamentos.json` deveria ter 7 dias, mas tem eventos de fevereiro a agosto de 2025. Ele é cumulativo? Um evento cancelado some do arquivo ou chega com outro tipo?
+4. Por que o processo 0056789 saiu da lista (pago, cancelado, outro tribunal)?
+5. Quem gera o arquivo `apresentacoes.json`, com que frequência, e por que ele não está no leiaute? Qual data vale oficialmente e em que fuso?
+
+Os dados do ev-002 e a codificação do arquivo `tribunal.csv` são diferentes do leiaute. A limpeza faz o tratamento dos dois casos, mas é importante verificar se foi erro pontual ou o gerador mudou.
+
+### Para a operação
+1. O `schema.sql` é o de produção? Ele não tem `apresentado_em` nem `prazo_pagamento`, e CHAR(20) não comporta o número mascarado que o hub exporta. E o `tribunal.csv` que temos é o anexo original ou a versão salva no Excel — o original está guardado?
+2. Temos log de quantas vezes o script foi reexecutado e os arquivos diários antigos? É útil para medir e planejar uma futura correção e, no mesmo sentido de correção, os prazos de pagamentos dos precatórios.
+3. A regra "o tribunal prevalece" em ente e valor de face foi adotada na limpeza e precisa de aprovação. Questão: o arquivo `hub.csv` pode ter sido editado após exportação? Os processos 0023456 e 0045678 tem valor de face e ente diferentes de `tribunal.csv`.
+4. Quem trata a quarentena e os alertas, e em quanto tempo? Os pagamentos dos eventos ev-004 (valor nulo) e o ev-010 (sem processo, R$ 750) aconteceram? De que valor e em qual processo? E o evento 0067890, que venceu em 31/12/2025 e não aparece no hub, alguém está acompanhando?
 
 
