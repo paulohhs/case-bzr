@@ -1,8 +1,6 @@
 import json
 
 from collections import defaultdict
-from dataclasses import dataclass, field
-from enum import StrEnum
 from datetime import date
 from decimal import Decimal
 
@@ -20,6 +18,8 @@ from .normalizacao import (
     normalizar_data_pagamento,
 )
 from .objetos_de_valor import (
+    Categoria,
+    Diario,
     Ocorrencia,
     LinhaPrecatorio,
     Apresentacao,
@@ -35,13 +35,6 @@ TIPOS_VALIDOS = {"pagamento", "estorno"}
 JANELA_PRAZO_PROXIMO_DIAS = 60
 
 
-class Categoria(StrEnum):
-    CORRIGIDO = "corrigido"
-    DESCARTADO = "descartado"
-    DUVIDA = "duvida"
-    AVISO = "aviso"
-
-
 def _canonico(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False)
 
@@ -52,35 +45,6 @@ def _id_evento(obj: object) -> str | None:
     
     return None
 
-
-@dataclass
-class Diario:
-    # Diário de ocorrências utilizado por todas as regras
-    itens: list[Ocorrencia] = field(default_factory=list)
-
-    def registrar(
-        self, 
-        categoria: Categoria, 
-        regra: str, 
-        arquivo: str, 
-        linha: int | None,
-        registro: str, 
-        detalhe: str
-    ) -> None:
-        self.itens.append(
-            Ocorrencia(
-                categoria=categoria, 
-                regra=regra, 
-                arquivo=arquivo, 
-                linha=linha, 
-                registro=registro, 
-                detalhe=detalhe
-            )
-        )
-
-    def da_categoria(self, categoria: Categoria) -> list[Ocorrencia]:
-        return [o for o in self.itens if o.categoria == categoria]
-    
 
 def _normalizar_linha_precatorio(
     linha: LinhaCsv, 
@@ -516,7 +480,7 @@ def conciliar(
                 detalhe=f"apresentado em {apresentado.isoformat()} (data de Brasília): prazo é "
                 f"{prazo.isoformat()}, o hub dizia {informado}"
             )
-        elif not processo_tribunal and prazo:
+        elif not processo_hub and prazo:
             diario.registrar(
                 categoria=Categoria.CORRIGIDO, 
                 regra="PRAZO_CALCULADO", 
