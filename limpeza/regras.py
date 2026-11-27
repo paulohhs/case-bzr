@@ -305,28 +305,28 @@ def ler_apresentacoes(
     """Datas de apresentação por processo (apresentacoes.json, arquivo não documentado no leiaute)."""
     indice: dict[str, Apresentacao] = {}
 
-    for o in objetos:
-        d = o.dados
-        if not isinstance(d, dict):
+    for objeto in objetos:
+        dados_processo = objeto.dados
+        if not isinstance(dados_processo, dict):
             diario.registrar(
                 categoria=Categoria.DUVIDA, 
                 regra="REGISTRO_INVALIDO", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro="?",
-                detalhe=f"esperava um objeto, veio {type(d).__name__}"
+                detalhe=f"esperava um objeto, veio {type(dados_processo).__name__}"
             )
             continue
 
         try:
-            processo = normalizar_cnj(d.get("processo"))
+            processo = normalizar_cnj(dados_processo.get("processo"))
         except ErroNormalizacao as exc:
             diario.registrar(
                 categoria=Categoria.DUVIDA, 
                 regra="PROCESSO_INVALIDO", 
                 arquivo=arquivo, 
-                linha=o.linha,
-                registro=str(d.get("processo") or "(vazio)"), 
+                linha=objeto.linha,
+                registro=str(dados_processo.get("processo") or "(vazio)"), 
                 detalhe=str(exc)
             )
             continue
@@ -336,18 +336,18 @@ def ler_apresentacoes(
                 categoria=Categoria.CORRIGIDO, 
                 regra="PROCESSO_SEM_MASCARA", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=processo.valor,
                 detalhe=processo.nota
             )
         try:
-            data = normalizar_data_apresentacao(d.get("apresentado_em"))
+            data = normalizar_data_apresentacao(dados_processo.get("apresentado_em"))
         except ErroNormalizacao as exc:
             diario.registrar(
                 categoria=Categoria.DUVIDA, 
                 regra="APRESENTACAO_INVALIDA", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=processo.valor, 
                 detalhe=str(exc)
             )
@@ -358,7 +358,7 @@ def ler_apresentacoes(
                 categoria=Categoria.CORRIGIDO, 
                 regra="APRESENTACAO_COM_FUSO", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=processo.valor, 
                 detalhe=data.nota
             )
@@ -366,13 +366,13 @@ def ler_apresentacoes(
         anterior = indice.get(processo.valor)
 
         if anterior is None:
-            indice[processo.valor] = Apresentacao(processo.valor, data.valor, o.linha)
+            indice[processo.valor] = Apresentacao(processo.valor, data.valor, objeto.linha)
         elif anterior.data == data.valor:
             diario.registrar(
                 categoria=Categoria.DESCARTADO, 
                 regra="APRESENTACAO_DUPLICADA", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=processo.valor,
                 detalhe=f"repete a linha {anterior.linha}"
             )
@@ -381,7 +381,7 @@ def ler_apresentacoes(
                 categoria=Categoria.DUVIDA, 
                 regra="APRESENTACAO_DUPLICADA_DIVERGENTE", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=processo.valor,
                 detalhe=f"linha {anterior.linha} diz {anterior.data}, esta diz {data.valor}; "
                 f"mantida a linha {anterior.linha}"
@@ -411,24 +411,24 @@ def conciliar(
     """
     resultado: dict[str, Precatorio] = {}
     for processo in sorted(tribunal.keys() | hub.keys()):
-        t, h = tribunal.get(processo), hub.get(processo)
+        processo_tribunal, processo_hub = tribunal.get(processo), hub.get(processo)
         pendencias: list[str] = []
 
-        a = apresentacoes.get(processo) if apresentacoes is not None else None
-        data_hub = h.apresentado_em if h else None
-        if a and data_hub and a.data != data_hub:
-            apresentado = a.data
-            pendencias.append(f"data de apresentação divergente: {arquivo_apresentacoes} {a.data}, hub {data_hub}")
+        processo_apresentacao = apresentacoes.get(processo) if apresentacoes is not None else None
+        data_hub = processo_hub.apresentado_em if processo_hub else None
+        if processo_apresentacao and data_hub and processo_apresentacao.data != data_hub:
+            apresentado = processo_apresentacao.data
+            pendencias.append(f"data de apresentação divergente: {arquivo_apresentacoes} {processo_apresentacao.data}, hub {data_hub}")
             diario.registrar(
                 categoria=Categoria.DUVIDA, 
                 regra="APRESENTACAO_DIVERGENTE", 
                 arquivo=arquivo_apresentacoes, 
-                linha=a.linha, 
+                linha=processo_apresentacao.linha, 
                 registro=processo,
-                detalhe=f"{arquivo_apresentacoes} diz {a.data}, hub (linha {h.linha}) diz {data_hub}; "
+                detalhe=f"{arquivo_apresentacoes} diz {processo_apresentacao.data}, hub (linha {processo_hub.linha}) diz {data_hub}; "
                 f"usada a de {arquivo_apresentacoes} até confirmação")
-        elif a:
-            apresentado = a.data
+        elif processo_apresentacao:
+            apresentado = processo_apresentacao.data
         else:
             apresentado = data_hub
             if apresentacoes is not None and data_hub:
@@ -436,92 +436,92 @@ def conciliar(
                     categoria=Categoria.AVISO, 
                     regra="APRESENTACAO_SO_NO_HUB", 
                     arquivo=arquivo_hub, 
-                    linha=h.linha, 
+                    linha=processo_hub.linha, 
                     registro=processo,
                     detalhe=f"processo ausente em {arquivo_apresentacoes}; usada a data do hub ({data_hub})"
                 )
 
-        if t and h:
+        if processo_tribunal and processo_hub:
             situacao = "conciliado"
-            ente, valor = t.ente_devedor, t.valor_face
-            if chave_texto(t.ente_devedor) == chave_texto(h.ente_devedor):
-                if t.ente_devedor != h.ente_devedor:
+            ente, valor = processo_tribunal.ente_devedor, processo_tribunal.valor_face
+            if chave_texto(processo_tribunal.ente_devedor) == chave_texto(processo_hub.ente_devedor):
+                if processo_tribunal.ente_devedor != processo_hub.ente_devedor:
                     diario.registrar(
                         categoria=Categoria.CORRIGIDO, 
                         regra="ENTE_GRAFIA", 
                         arquivo=arquivo_hub, 
-                        linha=h.linha, 
+                        linha=processo_hub.linha, 
                         registro=processo,
-                        detalhe=f"{h.ente_devedor!r} é o mesmo ente que {t.ente_devedor!r} no tribunal "
+                        detalhe=f"{processo_hub.ente_devedor!r} é o mesmo ente que {processo_tribunal.ente_devedor!r} no tribunal "
                         "(só muda acento, caixa ou espaço); adotada a grafia do tribunal"
                     )
             else:
-                pendencias.append(f"ente divergente: tribunal {t.ente_devedor!r}, hub {h.ente_devedor!r}")
+                pendencias.append(f"ente divergente: tribunal {processo_tribunal.ente_devedor!r}, hub {processo_hub.ente_devedor!r}")
                 diario.registrar(
                     categoria=Categoria.DUVIDA, 
                     regra="ENTE_DIVERGENTE", 
                     arquivo=arquivo_hub, 
-                    linha=h.linha, 
+                    linha=processo_hub.linha, 
                     registro=processo, 
-                    detalhe=f"tribunal (linha {t.linha}) diz {t.ente_devedor!r}, hub diz {h.ente_devedor!r}; "
+                    detalhe=f"tribunal (linha {processo_tribunal.linha}) diz {processo_tribunal.ente_devedor!r}, hub diz {processo_hub.ente_devedor!r}; "
                     "mantido o do tribunal até confirmação"
                 )
-            if t.valor_face != h.valor_face:
-                pendencias.append(f"valor de face divergente: tribunal {t.valor_face}, hub {h.valor_face}")
+            if processo_tribunal.valor_face != processo_hub.valor_face:
+                pendencias.append(f"valor de face divergente: tribunal {processo_tribunal.valor_face}, hub {processo_hub.valor_face}")
                 diario.registrar(
                     categoria=Categoria.DUVIDA, 
                     regra="VALOR_FACE_DIVERGENTE", 
                     arquivo=arquivo_hub, 
-                    linha=h.linha, 
+                    linha=processo_hub.linha, 
                     registro=processo,
-                    detalhe=f"tribunal (linha {t.linha}) {t.valor_face}, hub {h.valor_face}; "
+                    detalhe=f"tribunal (linha {processo_tribunal.linha}) {processo_tribunal.valor_face}, hub {processo_hub.valor_face}; "
                     "mantido o do tribunal até confirmação"
                 )
             if pendencias:
                 situacao = "divergente"
-        elif t:
-            situacao, ente, valor = "somente_tribunal", t.ente_devedor, t.valor_face
+        elif processo_tribunal:
+            situacao, ente, valor = "somente_tribunal", processo_tribunal.ente_devedor, processo_tribunal.valor_face
             pendencias.append("ausente na exportação do hub" +
                               ("" if apresentado else ": sem data de apresentação, prazo não calculado"))
             diario.registrar(
                 categoria=Categoria.DUVIDA, 
                 regra="AUSENTE_NO_HUB", 
                 arquivo=arquivo_tribunal, 
-                linha=t.linha, 
+                linha=processo_tribunal.linha, 
                 registro=processo,
                 detalhe="precatório do tribunal que não existe no hub; pagamentos dele são rejeitados pela FK do banco"
             )
         else:
-            assert h is not None
-            situacao, ente, valor = "somente_hub", h.ente_devedor, h.valor_face
+            assert processo_hub is not None
+            situacao, ente, valor = "somente_hub", processo_hub.ente_devedor, processo_hub.valor_face
             pendencias.append("ausente na lista do tribunal")
             diario.registrar(
                 categoria=Categoria.DUVIDA, 
                 regra="AUSENTE_NO_TRIBUNAL", 
                 arquivo=arquivo_hub, 
-                linha=h.linha, 
+                linha=processo_hub.linha, 
                 registro=processo,
                 detalhe="precatório do hub que não está na lista do tribunal"
             )
 
         prazo =calcular_prazo(apresentado) if apresentado else None
-        if h and prazo and h.prazo_informado != prazo:
-            informado = h.prazo_informado.isoformat() if h.prazo_informado else "vazio"
+        if processo_hub and prazo and processo_hub.prazo_informado != prazo:
+            informado = processo_hub.prazo_informado.isoformat() if processo_hub.prazo_informado else "vazio"
             diario.registrar(
                 categoria=Categoria.CORRIGIDO, 
                 regra="PRAZO_RECALCULADO", 
                 arquivo=arquivo_hub, 
-                linha=h.linha, 
+                linha=processo_hub.linha, 
                 registro=processo,
                 detalhe=f"apresentado em {apresentado.isoformat()} (data de Brasília): prazo é "
                 f"{prazo.isoformat()}, o hub dizia {informado}"
             )
-        elif not h and prazo:
+        elif not processo_tribunal and prazo:
             diario.registrar(
                 categoria=Categoria.CORRIGIDO, 
                 regra="PRAZO_CALCULADO", 
                 arquivo=arquivo_apresentacoes, 
-                linha=a.linha, 
+                linha=processo_apresentacao.linha, 
                 registro=processo,
                 detalhe=f"precatório fora do hub: apresentado em {apresentado.isoformat()}, "
                 f"prazo {prazo.isoformat()}"
@@ -550,7 +550,7 @@ def processar_pagamentos(
     resultado = ResultadoPagamentos()
 
     def duvida(
-        o: ObjetoJson, 
+        objeto: ObjetoJson, 
         regra: str, 
         registro: str, 
         motivos: list[str]
@@ -559,50 +559,50 @@ def processar_pagamentos(
             categoria=Categoria.DUVIDA, 
             regra=regra, 
             arquivo=arquivo, 
-            linha=o.linha, 
+            linha=objeto.linha, 
             registro=registro, 
             detalhe="; ".join(motivos)
         )
-        resultado.em_duvida.append(EventoEmDuvida(o.linha, motivos, o.dados))
+        resultado.em_duvida.append(EventoEmDuvida(objeto.linha, motivos, objeto.dados))
 
     # 1. Sem identificador não há como deduplicar nem versionar.
     com_id: list[ObjetoJson] = []
-    for o in objetos:
-        if _id_evento(o.dados) is None:
+    for objeto in objetos:
+        if _id_evento(objeto.dados) is None:
             duvida(
-                o=o, 
+                objeto=objeto, 
                 regra="EVENTO_SEM_ID", 
                 registro="?", 
                 motivos=["evento sem evento_id: não dá para saber se é repetido"]
             )
         else:
-            com_id.append(o)
+            com_id.append(objeto)
 
     # 2. Duplicata exata: o arquivo traz 7 dias e é reenviado todo dia, e a
     #    reimportação depois de falha repete tudo. Fica só a primeira ocorrência.
     vistos: dict[str, ObjetoJson] = {}
     unicos: list[ObjetoJson] = []
 
-    for o in com_id:
-        chave = _canonico(o.dados)
+    for objeto in com_id:
+        chave = _canonico(objeto.dados)
         if chave in vistos:
             diario.registrar(
                 categoria=Categoria.DESCARTADO, 
                 regra="DUPLICATA_EXATA", 
                 arquivo=arquivo, 
-                linha=o.linha, 
-                registro=_id_evento(o.dados),
+                linha=objeto.linha, 
+                registro=_id_evento(objeto.dados),
                 detalhe=f"idêntico ao registro da linha {vistos[chave].linha}"
             )
         else:
-            vistos[chave] = o
-            unicos.append(o)
+            vistos[chave] = objeto
+            unicos.append(objeto)
 
     # 3. Mesmo evento_id com conteúdo diferente: é uma correção. Vale a versão com
     #    atualizado_em mais recente, seja qual for a ordem no arquivo.
     grupos: dict[str, list[ObjetoJson]] = defaultdict(list)
-    for o in unicos:
-        grupos[_id_evento(o.dados)].append(o)
+    for objeto in unicos:
+        grupos[_id_evento(objeto.dados)].append(objeto)
 
     vencedores: list[ObjetoJson] = []
     for evento_id, versoes in grupos.items():
@@ -615,7 +615,7 @@ def processar_pagamentos(
         except ErroNormalizacao as exc:
             for v in versoes:
                 duvida(
-                    o=v, 
+                    objeto=v, 
                     regra="CONFLITO_DE_VERSAO", 
                     registro=evento_id,
                     motivos=[f"{len(versoes)} versões do evento e não dá para ordená-las ({exc})"]
@@ -628,7 +628,7 @@ def processar_pagamentos(
         if len(empatadas) > 1:
             for v in versoes:
                 duvida(
-                    o=v, 
+                    objeto=v, 
                     regra="CONFLITO_DE_VERSAO", 
                     registro=evento_id,
                     motivos=[f"{len(empatadas)} versões diferentes com o mesmo atualizado_em {mais_recente.isoformat()}"]
@@ -652,57 +652,57 @@ def processar_pagamentos(
             )
 
     # 4. Validação campo a campo da versão que vale.
-    for o in sorted(vencedores, key=lambda x: x.indice):
-        d: dict = o.dados
-        evento_id = _id_evento(d)
+    for objeto in sorted(vencedores, key=lambda x: x.indice):
+        dados: dict = objeto.dados
+        evento_id = _id_evento(dados)
         motivos: list[str] = []
         correcoes: list[tuple[str, str]] = []
 
         processo = None
         try:
-            n = normalizar_cnj(d.get("processo"))
-            processo = n.valor
-            if n.nota:
-                correcoes.append(("PROCESSO_SEM_MASCARA", n.nota))
+            cnj_normalizado = normalizar_cnj(dados.get("processo"))
+            processo = cnj_normalizado.valor
+            if cnj_normalizado.nota:
+                correcoes.append(("PROCESSO_SEM_MASCARA", cnj_normalizado.nota))
         except ErroNormalizacao as exc:
             motivos.append(str(exc))
 
         valor = None
         try:
-            v = normalizar_valor(d.get("valor"))
-            valor = v.valor
-            if v.nota:
-                correcoes.append(("VALOR_FORMATO_BR", v.nota))
+            valor_normalizado = normalizar_valor(dados.get("valor"))
+            valor = valor_normalizado.valor
+            if valor_normalizado.nota:
+                correcoes.append(("VALOR_FORMATO_BR", valor_normalizado.nota))
         except ErroNormalizacao as exc:
             motivos.append(str(exc))
 
-        tipo = str(d.get("tipo") or "").strip().casefold()
+        tipo = str(dados.get("tipo") or "").strip().casefold()
         if tipo not in TIPOS_VALIDOS:
-            motivos.append(f"tipo desconhecido: {d.get('tipo')!r}")
+            motivos.append(f"tipo desconhecido: {dados.get('tipo')!r}")
 
         atualizado = None
         try:
-            atualizado = ler_data_hora(d.get("atualizado_em"))
+            atualizado = ler_data_hora(dados.get("atualizado_em"))
         except ErroNormalizacao as exc:
             diario.registrar(
                 categoria=Categoria.AVISO, 
                 regra="ATUALIZADO_EM_INVALIDO", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=evento_id, 
                 detalhe=str(exc)
             )
 
         data_pgto = None
         try:
-            dp = normalizar_data_pagamento(
-                bruto=d.get("data_pagamento"),
+            dt_pgt_normalizado = normalizar_data_pagamento(
+                bruto=dados.get("data_pagamento"),
                 referencia=data_local(atualizado) if atualizado else None
             )
-            data_pgto = dp.valor
+            data_pgto = dt_pgt_normalizado.valor
 
-            if dp.nota:
-                correcoes.append(("DATA_FORMATO_BR", dp.nota))
+            if dt_pgt_normalizado.nota:
+                correcoes.append(("DATA_FORMATO_BR", dt_pgt_normalizado.nota))
         except ErroNormalizacao as exc:
             motivos.append(str(exc))
 
@@ -718,8 +718,8 @@ def processar_pagamentos(
             motivos.append(f"processo {processo} não existe nem no tribunal nem no hub")
 
         if motivos:
-            regra = "PROCESSO_AUSENTE" if not d.get("processo") else "EVENTO_INVALIDO"
-            duvida(o, regra, evento_id, motivos)
+            regra = "PROCESSO_AUSENTE" if not dados.get("processo") else "EVENTO_INVALIDO"
+            duvida(objeto, regra, evento_id, motivos)
             continue
 
         for regra, nota in correcoes:
@@ -727,7 +727,7 @@ def processar_pagamentos(
                 categoria=Categoria.CORRIGIDO, 
                 regra=regra, 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=evento_id, 
                 detalhe=nota
             )
@@ -737,7 +737,7 @@ def processar_pagamentos(
                 categoria=Categoria.CORRIGIDO, 
                 regra="ESTORNO_SUBTRAIDO", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=evento_id, 
                 detalhe=f"tipo 'estorno' (não previsto no leiaute v2.1) subtrai {valor} do total pago"
             )
@@ -747,17 +747,17 @@ def processar_pagamentos(
                 categoria=Categoria.AVISO, 
                 regra="PAGAMENTO_APOS_ATUALIZACAO", 
                 arquivo=arquivo, 
-                linha=o.linha, 
+                linha=objeto.linha, 
                 registro=evento_id, 
                 detalhe=f"data de pagamento {data_pgto} posterior a atualizado_em {atualizado.isoformat()}"
             )
             
-        resultado.aceitos.append(Pagamento(evento_id, processo, tipo, valor, data_pgto, atualizado, o.linha))
+        resultado.aceitos.append(Pagamento(evento_id, processo, tipo, valor, data_pgto, atualizado, objeto.linha))
 
     # 5. Mesmo processo, tipo, valor e data com ids diferentes pode ser reenvio com id novo.
     por_conteudo: dict[tuple, list[Pagamento]] = defaultdict(list)
-    for p in resultado.aceitos:
-        por_conteudo[(p.numero_processo, p.tipo, p.valor, p.data_pagamento)].append(p)
+    for pagamento in resultado.aceitos:
+        por_conteudo[(pagamento.numero_processo, pagamento.tipo, pagamento.valor, pagamento.data_pagamento)].append(pagamento)
 
     for grupo in por_conteudo.values():
         if len(grupo) > 1:
@@ -818,37 +818,37 @@ def classificar_prazos(
     Roda depois dos totais, porque só importa o prazo de quem ainda tem saldo. O
     último dia conta como dentro do prazo: vencido é só quando a referência passou dele.
     """
-    for p in precatorios.values():
-        if p.prazo_pagamento is None:
-            p.situacao_prazo = "sem_prazo"
+    for precatorio in precatorios.values():
+        if precatorio.prazo_pagamento is None:
+            precatorio.situacao_prazo = "sem_prazo"
             continue
         
-        p.dias_para_prazo = (p.prazo_pagamento - referencia).days
-        if p.saldo <= ZERO:
-            p.situacao_prazo = "quitado"
-        elif p.dias_para_prazo < 0:
-            p.situacao_prazo = "vencido"
-            atraso = -p.dias_para_prazo
-            p.pendencias.append(f"prazo vencido em {p.prazo_pagamento} ({atraso} dias), saldo {p.saldo:.2f}")
+        precatorio.dias_para_prazo = (precatorio.prazo_pagamento - referencia).days
+        if precatorio.saldo <= ZERO:
+            precatorio.situacao_prazo = "quitado"
+        elif precatorio.dias_para_prazo < 0:
+            precatorio.situacao_prazo = "vencido"
+            atraso = -precatorio.dias_para_prazo
+            precatorio.pendencias.append(f"prazo vencido em {precatorio.prazo_pagamento} ({atraso} dias), saldo {precatorio.saldo:.2f}")
             
             diario.registrar(
                 categoria=Categoria.AVISO, 
                 regra="PRAZO_VENCIDO", 
                 arquivo="base limpa", 
                 linha=None, 
-                registro=p.numero_processo,
-                detalhe=f"prazo {p.prazo_pagamento} vencido há {atraso} dias em {referencia}; "
-                         f"saldo {p.saldo:.2f}"
+                registro=precatorio.numero_processo,
+                detalhe=f"prazo {precatorio.prazo_pagamento} vencido há {atraso} dias em {referencia}; "
+                         f"saldo {precatorio.saldo:.2f}"
             )
-        elif p.dias_para_prazo <= JANELA_PRAZO_PROXIMO_DIAS:
-            p.situacao_prazo = "a_vencer"
+        elif precatorio.dias_para_prazo <= JANELA_PRAZO_PROXIMO_DIAS:
+            precatorio.situacao_prazo = "a_vencer"
             diario.registrar(
                 categoria=Categoria.AVISO, 
                 regra="PRAZO_PROXIMO", 
                 arquivo="base limpa", 
                 linha=None, 
-                registro=p.numero_processo,
-                detalhe=f"prazo {p.prazo_pagamento} vence em {p.dias_para_prazo} dias; saldo {p.saldo:.2f}"
+                registro=precatorio.numero_processo,
+                detalhe=f"prazo {precatorio.prazo_pagamento} vence em {precatorio.dias_para_prazo} dias; saldo {precatorio.saldo:.2f}"
             )
         else:
-            p.situacao_prazo = "em_dia"
+            precatorio.situacao_prazo = "em_dia"

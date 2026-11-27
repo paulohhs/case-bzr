@@ -142,9 +142,9 @@ def gravar(resultado: Resultado, saida: Path) -> list[Path]:
     gerados: list[Path] = []
 
     caminho = saida / "precatorios_limpos.csv"
-    with caminho.open("w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f, lineterminator="\n")
-        w.writerow(
+    with caminho.open("w", encoding="utf-8", newline="") as arquivo:
+        escritor = csv.writer(arquivo, lineterminator="\n")
+        escritor.writerow(
             [
                 "numero_processo", 
                 "ente_devedor", 
@@ -160,30 +160,30 @@ def gravar(resultado: Resultado, saida: Path) -> list[Path]:
                 "pendencias"
             ]
         )
-        for p in resultado.precatorios.values():
-            w.writerow(
+        for precatorio in resultado.precatorios.values():
+            escritor.writerow(
                 [
-                    p.numero_processo, 
-                    p.ente_devedor, 
-                    _dinheiro(p.valor_face),
-                    p.apresentado_em.isoformat() if p.apresentado_em else "",
-                    p.prazo_pagamento.isoformat() if p.prazo_pagamento else "",
-                    p.situacao_prazo, 
-                    "" if p.dias_para_prazo is None else p.dias_para_prazo,
-                    _dinheiro(p.total_pago), 
-                    _dinheiro(p.saldo), 
-                    p.situacao,
-                    "sim" if p.dv_cnj_valido else "nao", 
-                    " | ".join(p.pendencias)
+                    precatorio.numero_processo, 
+                    precatorio.ente_devedor, 
+                    _dinheiro(precatorio.valor_face),
+                    precatorio.apresentado_em.isoformat() if precatorio.apresentado_em else "",
+                    precatorio.prazo_pagamento.isoformat() if precatorio.prazo_pagamento else "",
+                    precatorio.situacao_prazo, 
+                    "" if precatorio.dias_para_prazo is None else precatorio.dias_para_prazo,
+                    _dinheiro(precatorio.total_pago), 
+                    _dinheiro(precatorio.saldo), 
+                    precatorio.situacao,
+                    "sim" if precatorio.dv_cnj_valido else "nao", 
+                    " | ".join(precatorio.pendencias)
                 ]
             )
 
     gerados.append(caminho)
 
     caminho = saida / "pagamentos_limpos.csv"
-    with caminho.open("w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f, lineterminator="\n")
-        w.writerow([
+    with caminho.open("w", encoding="utf-8", newline="") as arquivo:
+        escritor = csv.writer(arquivo, lineterminator="\n")
+        escritor.writerow([
             "evento_id", 
             "numero_processo", 
             "tipo", 
@@ -194,16 +194,16 @@ def gravar(resultado: Resultado, saida: Path) -> list[Path]:
             "linha_origem"
         ])
 
-        for p in resultado.pagamentos.aceitos:
-            w.writerow([
-                p.evento_id, 
-                p.numero_processo, 
-                p.tipo, 
-                _dinheiro(p.valor), 
-                _dinheiro(p.valor_assinado),
-                p.data_pagamento.isoformat(), 
-                p.atualizado_em.isoformat() if p.atualizado_em else "",
-                p.linha
+        for pagamentos in resultado.pagamentos.aceitos:
+            escritor.writerow([
+                pagamentos.evento_id, 
+                pagamentos.numero_processo, 
+                pagamentos.tipo, 
+                _dinheiro(pagamentos.valor), 
+                _dinheiro(pagamentos.valor_assinado),
+                pagamentos.data_pagamento.isoformat(), 
+                pagamentos.atualizado_em.isoformat() if pagamentos.atualizado_em else "",
+                pagamentos.linha
             ])
             
     gerados.append(caminho)
